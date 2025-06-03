@@ -1,0 +1,11 @@
+# student-dropout-prediction-api/requirements.txt
+pandas
+numpy
+scikit-learn
+joblib
+fastapi
+uvicorn[standard]
+python-multipart  # For file uploads (batch prediction)
+gunicorn # Alternative ASGI server for production
+# Add specific versions if known to be required by ml_dropout_prediction_system.py
+# Example: scikit-learn==1.3.0 (if using features from this version)

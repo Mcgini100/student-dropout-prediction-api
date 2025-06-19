@@ -62,7 +62,18 @@ class StudentDataInput(BaseModel):
                 'Sem2_GPA': None 
             }
         }
+class FeatureImportanceItem(BaseModel):
+    feature: str
+    importance: float
 
+class FeatureImportanceResponse(BaseModel):
+    # Option 1: Two separate lists (as you used in frontend example)
+    # features: List[str]
+    # importances: List[float]
+    # Option 2: List of objects (more structured, and often preferred)
+    feature_importances: List[FeatureImportanceItem]
+    model_type: Optional[str] = None # To know which model's importance this is
+    
 class PredictionResponse(BaseModel):
     predicted_outcome: str
     probabilities: Dict[str, float]

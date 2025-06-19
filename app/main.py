@@ -1,18 +1,27 @@
 # student-dropout-prediction-api/app/main.py
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse
-from typing import List, Dict, Any
+from fastapi.middleware.cors import CORSMiddleware # Ensure this is imported
+from typing import List, Dict, Any, Optional # Ensure Optional is imported
 import pandas as pd
 import io
-from fastapi.middleware.cors import CORSMiddleware
 
+# Import Pydantic models from schemas.py
 from app.schemas import (
-    StudentDataInput, PredictionResponse, BatchPredictionResponse,
-    TrainResponse, ModelInfoResponse
+    StudentDataInput,
+    PredictionResponse,
+    BatchPredictionResponse,
+    TrainResponse,
+    ModelInfoResponse,
+    FeatureImportanceItem,  # New schema for feature importance item
+    FeatureImportanceResponse # New schema for feature importance response
 )
 from app.services import (
-    predict_single_student, predict_batch_students,
-    train_model_pipeline, get_model_information, 
+    predict_single_student,
+    predict_batch_students,
+    train_model_pipeline,
+    get_model_information,
+    get_feature_importance_data # New service function
 )
 from app.core_utils import load_predictor_model, get_predictor, DEFAULT_MODEL_PATH
 
@@ -22,31 +31,39 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# CORS Configuration
+# Adjust origins as needed for your frontend development and production environments
 origins = [
-    "http://localhost:5173",  # Your React frontend origin
-    "http://localhost:3000",  # Another common React dev port (optional)
-    # You can add other origins here if needed, e.g., your deployed frontend URL
+    "http://localhost",         # Common base for many local dev servers
+    "http://localhost:3000",    # Default for Create React App
+    "http://localhost:5173",    # Default for Vite (React, Vue, Svelte)
+    "http://localhost:8080",    # Common for Vue CLI
+    # Add your production frontend origin here when deploying
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # Allows specific origins
-    # allow_origins=["*"], # Allows all origins (less secure, use for public APIs or if origins list is too dynamic for dev)
-    allow_credentials=True, # Allows cookies to be included in requests (if you use them)
-    allow_methods=["*"],    # Allows all standard HTTP methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"],    # Allows all headers
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allows all headers
 )
+
 
 @app.on_event("startup")
 async def startup_event():
     print("🚀 API starting up. Loading ML model...")
-    load_predictor_model(model_path=DEFAULT_MODEL_PATH) # Load from default path
+    load_predictor_model(model_path=DEFAULT_MODEL_PATH)
     predictor = get_predictor()
     if predictor and predictor.is_fitted:
         print("✅ ML Model loaded and ready.")
     else:
         print("⚠️ ML Model not loaded or not ready. Training may be required via /train endpoint.")
 
+
+@app.get("/", tags=["Root"])
+async def read_root():
+    return {"message": "Welcome to the Student Dropout Prediction API. See /docs for details."}
 
 @app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
 async def predict(student_data: StudentDataInput):
@@ -61,7 +78,6 @@ async def predict(student_data: StudentDataInput):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # Log e for server-side debugging
         raise HTTPException(status_code=500, detail=f"Internal server error during prediction: {str(e)}")
 
 @app.post("/batch-predict", response_model=BatchPredictionResponse, tags=["Prediction"])
@@ -75,7 +91,7 @@ async def batch_predict(students_data: List[StudentDataInput]):
     try:
         results = predict_batch_students(students_data)
         return BatchPredictionResponse(results=results)
-    except ValueError as e: # From service layer if model not ready for batch
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error during batch prediction: {str(e)}")
@@ -99,12 +115,9 @@ async def batch_predict_csv(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error parsing CSV file: {str(e)}")
 
-    # Convert DataFrame rows to List[StudentDataInput]
     students_input_list: List[StudentDataInput] = []
-    # Store student IDs if present
     student_ids = df['Student_ID'].tolist() if 'Student_ID' in df.columns else [f"csv_student_{i+1}" for i in range(len(df))]
 
-    # Drop Student_ID if it was used, as it's not a feature
     if 'Student_ID' in df.columns:
         df_features = df.drop(columns=['Student_ID'])
     else:
@@ -112,19 +125,16 @@ async def batch_predict_csv(file: UploadFile = File(...)):
         
     for index, row in df_features.iterrows():
         try:
-            # Pydantic will validate and convert types (e.g., NaN from CSV to None for Optional fields)
-            data_dict = row.where(pd.notnull(row), None).to_dict() # Convert NaNs to None for Pydantic
+            data_dict = row.where(pd.notnull(row), None).to_dict()
             students_input_list.append(StudentDataInput(**data_dict))
-        except Exception as e: # PydanticValidationError
+        except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid data in CSV row {index + 1}: {str(e)}. Ensure columns match schema.")
     
     try:
         prediction_results = predict_batch_students(students_input_list)
-        # Map original student IDs back if available
         for i, res in enumerate(prediction_results):
             res.student_id = student_ids[i]
         return BatchPredictionResponse(results=prediction_results)
-
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -135,18 +145,11 @@ async def batch_predict_csv(file: UploadFile = File(...)):
 async def train_model(background_tasks: BackgroundTasks):
     """
     Trigger the ML model training pipeline.
-    This is a long-running task and will be run in the background.
-    The immediate response indicates submission. Check logs/model info for completion.
+    This is a long-running task. The API currently handles it synchronously.
+    For true background execution with status polling, Celery or similar would be better.
     """
-    # For true background execution and status polling, Celery or similar would be better.
-    # Here, BackgroundTasks runs it after response, but client doesn't get live updates.
-    
-    # Synchronous for now to see output, can be moved to background_tasks.add_task
-    # background_tasks.add_task(train_model_pipeline)
-    # return TrainResponse(status="submitted", message="Model training pipeline initiated in the background.")
-    
     try:
-        result = train_model_pipeline() # This is synchronous
+        result = train_model_pipeline()
         return TrainResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start training: {str(e)}")
@@ -157,8 +160,24 @@ async def model_info():
     Get information about the currently loaded model.
     """
     info = get_model_information()
+    # The Pydantic model ModelInfoResponse will automatically select the fields it needs
+    # from the 'info' dictionary returned by get_model_information.
     return ModelInfoResponse(**info)
 
-@app.get("/", tags=["Root"])
-async def read_root():
-    return {"message": "Welcome to the Student Dropout Prediction API. See /docs for details."}
+# --- NEW ENDPOINT for Feature Importance ---
+@app.get("/feature-importance", response_model=FeatureImportanceResponse, tags=["Insights"])
+async def get_global_feature_importance():
+    """
+    Get global feature importance scores for the best performing model.
+    """
+    importance_data_dict = get_feature_importance_data() # Call the new service function
+    
+    if not importance_data_dict or not importance_data_dict.get("feature_importances"):
+        # Check if the model is simply not ready vs. importance specifically not found
+        predictor = get_predictor()
+        if not predictor or not predictor.is_fitted or not predictor.best_model:
+             raise HTTPException(status_code=503, detail="Model not loaded or ready. Train a model first.")
+        else:
+             raise HTTPException(status_code=404, detail="Feature importance data not available for the current model.")
+             
+    return FeatureImportanceResponse(**importance_data_dict)

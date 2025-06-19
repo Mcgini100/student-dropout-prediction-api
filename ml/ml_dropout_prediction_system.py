@@ -27,6 +27,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.inspection import permutation_importance
 import joblib
 import warnings
 import os
@@ -328,27 +329,100 @@ class StudentDropoutPredictor:
         print(f"🏆 Best model selected: {best_model_name}")
         return X_train, X_test, y_train, y_test
     
-    def analyze_feature_importance(self, feature_names):
-        """Analyze feature importance for interpretation"""
-        if not feature_names:
-            print("⚠️ Cannot analyze feature importance without feature names (typically available after training).")
+    def analyze_feature_importance(self, feature_names_after_preprocessing, X_test_processed, y_test):
+        """
+        Analyze feature importance using Permutation Importance for the best model,
+        and direct feature_importances_ for tree-based models if available.
+
+        Args:
+            feature_names_after_preprocessing (list): List of feature names *after* preprocessing (e.g., after OneHotEncoding).
+            X_test_processed (np.ndarray): The preprocessed test data (output of self.preprocessor.transform(X_test_original)).
+            y_test (pd.Series or np.ndarray): The true labels for the test set.
+        """
+        if not feature_names_after_preprocessing:
+            print("⚠️ Cannot analyze feature importance without processed feature names.")
+            return
+        if X_test_processed is None or y_test is None:
+            print("⚠️ Test data (X_test_processed, y_test) is required for Permutation Importance.")
             return
 
         print("🔍 Analyzing feature importance...")
-        for name, model_instance in self.models.items():
-            if hasattr(model_instance, 'feature_importances_'):
-                importances = model_instance.feature_importances_
-                if len(feature_names) != len(importances):
-                    print(f"  ⚠️ Mismatch in feature names ({len(feature_names)}) and importances ({len(importances)}) for {name}. Skipping.")
-                    continue
-                feature_importance_df = pd.DataFrame({
-                    'feature': feature_names, 'importance': importances
-                }).sort_values('importance', ascending=False)
-                self.feature_importance[name] = feature_importance_df
-                print(f"  📈 Top 10 features for {name}:")
-                print(feature_importance_df.head(10).to_string(index=False)) # Cleaner print
+        self.feature_importance = {} # Reset or initialize
+
+        # --- 1. Permutation Importance for the Best Model (most robust) ---
+        if self.best_model:
+            print(f"  Calculating Permutation Importance for the best model: {self.best_model.__class__.__name__}...")
+            try:
+                # n_repeats can be adjusted; higher is more stable but slower.
+                # scoring can be 'accuracy', 'f1_weighted', 'roc_auc_ovr_weighted', etc.
+                perm_importance_result = permutation_importance(
+                    self.best_model,
+                    X_test_processed,
+                    y_test,
+                    n_repeats=10,       # Number of times to permute a feature
+                    random_state=42,
+                    n_jobs=-1,          # Use all available cores
+                    scoring='accuracy'  # Or another appropriate metric
+                )
+                
+                # Sort features by importance
+                sorted_idx = perm_importance_result.importances_mean.argsort()[::-1]
+                
+                perm_features = np.array(feature_names_after_preprocessing)[sorted_idx]
+                perm_importances_mean = perm_importance_result.importances_mean[sorted_idx]
+                
+                # Store as DataFrame
+                perm_importance_df = pd.DataFrame({
+                    'feature': perm_features,
+                    'importance': perm_importances_mean
+                })
+
+                # Determine the key to store this under. If best_model is Ensemble, use 'Ensemble_Permutation'.
+                # Otherwise, use its class name + '_Permutation'.
+                best_model_key = self.best_model.__class__.__name__
+                if isinstance(self.best_model, VotingClassifier) and 'Ensemble' in self.models and self.models['Ensemble'] == self.best_model:
+                    best_model_key = 'Ensemble' # Use 'Ensemble' as the key for API consistency
+                
+                # Store with a clear name indicating it's permutation importance
+                self.feature_importance[f"{best_model_key}_Permutation"] = perm_importance_df
+                
+                print(f"  📈 Top 10 features for BEST MODEL ({best_model_key}) using Permutation Importance:")
+                print(perm_importance_df.head(10).to_string(index=False))
                 print()
-    
+
+            except Exception as e:
+                print(f"  ⚠️ Error calculating Permutation Importance for {self.best_model.__class__.__name__}: {e}")
+                print("     Ensure the model is fitted and X_test_processed/y_test are correctly preprocessed.")
+
+        # --- 2. Direct feature_importances_ for other tree-based models (optional, for comparison) ---
+        # This provides intrinsic importance from tree-based models, which is faster but model-specific.
+        print("  Calculating direct feature_importances_ for applicable individual models...")
+        for name, model_instance in self.models.items():
+            # Skip if it's the best model and we already did permutation importance,
+            # unless you want both direct and permutation for it.
+            # if model_instance == self.best_model and f"{name}_Permutation" in self.feature_importance:
+            #     continue
+            
+            if hasattr(model_instance, 'feature_importances_'):
+                try:
+                    importances = model_instance.feature_importances_
+                    if len(feature_names_after_preprocessing) != len(importances):
+                        print(f"  ⚠️ Mismatch in feature names ({len(feature_names_after_preprocessing)}) and importances ({len(importances)}) for {name}. Skipping direct importance.")
+                        continue
+                    
+                    feature_importance_df = pd.DataFrame({
+                        'feature': feature_names_after_preprocessing, 
+                        'importance': importances
+                    }).sort_values('importance', ascending=False)
+                    
+                    self.feature_importance[f"{name}_Direct"] = feature_importance_df # Store with a clear name
+                    
+                    print(f"  📊 Top 10 features for {name} (Direct Importance):")
+                    print(feature_importance_df.head(10).to_string(index=False))
+                    print()
+                except Exception as e:
+                    print(f"  ⚠️ Error getting direct feature importances for {name}: {e}")
+
     def create_ensemble_model(self, X_train, y_train, X_test, y_test): # Added X_test, y_test
         """Create an ensemble model combining best performers AND evaluate it."""
         print("🎯 Creating and evaluating ensemble model...")
@@ -541,7 +615,6 @@ def main_training_pipeline():
     
     predictor = StudentDropoutPredictor()
     
-    # Path for dataset loading, relative to project root
     dataset_path = "ml/data/student_dropout_dataset.csv"
     generated_dataset_path = "ml/data/generated_student_dropout_dataset.csv"
 
@@ -550,10 +623,10 @@ def main_training_pipeline():
     
     if df is None or df.empty:
         print(f"   🔄 Dataset not found at {dataset_path}. Falling back to sample dataset generation...")
-        df = predictor.generate_dataset(n_students=2000) # Reduced for faster example
+        df = predictor.generate_dataset(n_students=2000) 
         if df is None or df.empty:
             print("❌ Failed to load or generate dataset. Exiting.")
-            return None, None
+            return None, None # Return tuple
         try:
             os.makedirs(os.path.dirname(generated_dataset_path), exist_ok=True)
             df.to_csv(generated_dataset_path, index=False)
@@ -561,59 +634,89 @@ def main_training_pipeline():
         except Exception as e:
             print(f"   ⚠️ Could not save generated dataset: {e}")
     
-    print(f"\n📋 Dataset Summary (using features from training data):")
-    # Store original feature columns from the loaded/generated df for the sample prediction later
+    # --- Store original feature columns for sample prediction later ---
     # These are the columns *before* preprocessing, excluding Student_ID and Target
     if 'Target' in df.columns and 'Student_ID' in df.columns:
-         training_df_feature_columns = df.drop(columns=['Target', 'Student_ID']).columns.tolist()
+         training_df_feature_columns_for_sample = df.drop(columns=['Target', 'Student_ID']).columns.tolist()
     elif 'Target' in df.columns:
-         training_df_feature_columns = df.drop(columns=['Target']).columns.tolist()
-    else: # Should not happen if validation passed or generation worked
-         training_df_feature_columns = df.columns.tolist()
+         training_df_feature_columns_for_sample = df.drop(columns=['Target']).columns.tolist()
+    else: 
+         training_df_feature_columns_for_sample = df.columns.tolist()
 
 
     print("\n2️⃣ Preprocessing data...")
-    X, y, feature_names = predictor.preprocess_data(df, is_training=True)
+    # preprocess_data(self, df, is_training=True) returns:
+    # X_processed_data, y_target, feature_names_after_preprocessing
+    X_processed_full, y_target_full, processed_feature_names = predictor.preprocess_data(df.copy(), is_training=True)
     
-    print("\n3️⃣ Training ML models...")
-    X_train, X_test, y_train, y_test = predictor.train_models(X, y) # X_test, y_test are available here
+    if X_processed_full is None or y_target_full is None or processed_feature_names is None:
+        print("❌ Data preprocessing failed or did not return expected outputs. Exiting.")
+        return None, None # Return tuple
+
+    # --- Training and Ensemble Creation ---
+    print("\n3️⃣ Training ML models (individual base models)...")
+    # train_models(self, X, y) returns:
+    # X_train_processed_internal, X_test_processed_internal, y_train_internal, y_test_internal
+    # These are the splits of X_processed_full and y_target_full
+    X_train_p_internal, X_test_p_internal, y_train_internal, y_test_internal = predictor.train_models(
+        X_processed_full, y_target_full
+    )
     
-    print("\n4️⃣ Analyzing feature importance...")
-    predictor.analyze_feature_importance(feature_names)
-    
-    print("\n5️⃣ Creating ensemble model...")
-    # Pass X_test, y_test to the modified create_ensemble_model method
-    ensemble = predictor.create_ensemble_model(X_train, y_train, X_test, y_test) 
-    if ensemble:
-        print("   Ensemble model created, evaluated, and set as best_model.")
+    if X_test_p_internal is None or y_test_internal is None: # Check if train_models failed
+        print("❌ Model training failed or did not return test split. Exiting.")
+        return None, None
+
+    print("\n4️⃣ Creating ensemble model (if applicable)...")
+    # create_ensemble_model(self, X_train, y_train, X_test, y_test)
+    # This might update predictor.best_model
+    ensemble_model = predictor.create_ensemble_model(
+        X_train_p_internal, y_train_internal, X_test_p_internal, y_test_internal
+    )
+    if ensemble_model:
+         print("   Ensemble model created and evaluated. `predictor.best_model` might be updated to the ensemble.")
     else:
-        print("   Ensemble model creation skipped or failed.")
-    # ... (rest of the main_training_pipeline remains largely the same) ...
-    # For brevity, I'll skip repeating the full printout sections for metrics and insights
-    # as they are primarily for script output, not core logic adjustment.
-    
+         print("   Ensemble model creation skipped or failed. `predictor.best_model` remains the best single model.")
+
+    # --- Feature Importance Analysis (on the *final* best_model) ---
+    print("\n5️⃣ Analyzing feature importance (on final best model)...")
+    # analyze_feature_importance(self, feature_names_after_preprocessing, X_test_processed, y_test)
+    # Uses the test split (X_test_p_internal, y_test_internal) from the train_models step
+    # and the processed_feature_names from the initial full preprocessing step.
+    # It will use whatever is currently set as predictor.best_model.
+    predictor.analyze_feature_importance(
+        processed_feature_names, X_test_p_internal, y_test_internal
+    )
+
+    # --- Reporting and Saving ---
     print("\n" + "=" * 50)
-    print("📈 MODEL PERFORMANCE SUMMARY (Showing for best model if ensemble, else for all)")
-    # ... (print summary logic) ...
-    
-    print("\n" + "=" * 50)
-    print("🔮 SAMPLE STUDENT RISK ASSESSMENT")
+    print("📈 MODEL PERFORMANCE SUMMARY")
     print("=" * 50)
     
-    for model_name_iter, metrics_iter in predictor.performance_metrics.items(): # Renamed loop vars
-        print(f"{model_name_iter}:")
-        # Use .get for safety in case some metrics are None (like CV for ensemble initially)
-        cv_mean_val = metrics_iter.get('cv_mean')
-        cv_std_val = metrics_iter.get('cv_std')
-        cv_output = f"{cv_mean_val:.3f} ± {cv_std_val:.3f}" if cv_mean_val is not None and cv_std_val is not None else "N/A"
-        
-        print(f"  • Cross-validation: {cv_output}")
-        print(f"  • Test Accuracy: {metrics_iter.get('test_accuracy', 'N/A'):.3f}")
-        print(f"  • Precision: {metrics_iter.get('precision', 'N/A'):.3f}")
-        print(f"  • Recall: {metrics_iter.get('recall', 'N/A'):.3f}")
-        print(f"  • F1-Score: {metrics_iter.get('f1_score', 'N/A'):.3f}")
-        print()
+    if not predictor.performance_metrics:
+        print("  No performance metrics available to display.")
+    else:
+        for model_name_iter, metrics_iter in predictor.performance_metrics.items():
+            print(f"{model_name_iter}:")
+            cv_mean_val = metrics_iter.get('cv_mean')
+            cv_std_val = metrics_iter.get('cv_std')
+            cv_output = f"{cv_mean_val:.3f} (± {cv_std_val:.3f})" if cv_mean_val is not None and cv_std_val is not None else "N/A"
+            
+            test_accuracy_val = metrics_iter.get('test_accuracy', 'N/A')
+            precision_val = metrics_iter.get('precision', 'N/A')
+            recall_val = metrics_iter.get('recall', 'N/A')
+            f1_score_val = metrics_iter.get('f1_score', 'N/A')
 
+            print(f"  • Cross-validation Accuracy: {cv_output}")
+            print(f"  • Test Accuracy: {test_accuracy_val if isinstance(test_accuracy_val, str) else test_accuracy_val:.3f}")
+            print(f"  • Precision (weighted): {precision_val if isinstance(precision_val, str) else precision_val:.3f}")
+            print(f"  • Recall (weighted): {recall_val if isinstance(recall_val, str) else recall_val:.3f}")
+            print(f"  • F1-Score (weighted): {f1_score_val if isinstance(f1_score_val, str) else f1_score_val:.3f}")
+            print()
+
+    print("\n" + "=" * 50)
+    print("🔮 SAMPLE STUDENT RISK ASSESSMENT (using final best model)")
+    print("=" * 50)
+    
     sample_student_dict_raw = { # Raw data, keys should match original df columns
         'Gender': 'Male', 'Age_at_enrollment': 23, 'Marital_status': 'Single', 
         'Application_mode': 'Online', 'Course_type': 'Evening', 'Academic_program': 'Engineering', 
@@ -627,46 +730,51 @@ def main_training_pipeline():
         'Sem1_curricular_units_enrolled': 6, 'Sem1_curricular_units_evaluations': 7, 
         'Sem1_curricular_units_approved': 2, 'Sem1_grade': 9.5, 
         'Sem1_curricular_units_without_evaluations': 1, 
+        # Ensure all fields expected by predictor._all_trained_original_features are present or handled
         'Sem2_attendance_rate': np.nan, 'Sem2_GPA': np.nan, 'Sem2_curricular_units_credited': np.nan, 
         'Sem2_curricular_units_enrolled': np.nan, 'Sem2_curricular_units_evaluations': np.nan, 
         'Sem2_curricular_units_approved': np.nan, 'Sem2_grade': np.nan, 
         'Sem2_curricular_units_without_evaluations': np.nan
     }
     
-    # Create a DataFrame for prediction using only the features the model was trained on.
-    # Use the stored _all_trained_original_features from the predictor instance
-    # (which were set during predictor.preprocess_data with is_training=True)
     sample_student_for_prediction_dict = {}
-    if predictor._all_trained_original_features:
-        for col in predictor._all_trained_original_features:
-            sample_student_for_prediction_dict[col] = sample_student_dict_raw.get(col, np.nan)
-        sample_student_df = pd.DataFrame([sample_student_for_prediction_dict])
+    if predictor._all_trained_original_features: # This list is set in preprocess_data
+        for col_name in predictor._all_trained_original_features:
+            sample_student_for_prediction_dict[col_name] = sample_student_dict_raw.get(col_name, np.nan) # Use original names
+        sample_student_df_for_pred = pd.DataFrame([sample_student_for_prediction_dict])
         
         try:
-            risk_assessment = predictor.predict_student_risk(sample_student_df)
-            print(f"👤 Student Profile: Example high-risk student")
-            print(f"📊 Academic Status: GPA {sample_student_dict_raw.get('Sem1_GPA', 'N/A')}, Attendance {sample_student_dict_raw.get('Sem1_attendance_rate', 'N/A')}%")
-            print(f"\n🎯 RISK ASSESSMENT:")
-            print(f"  • Predicted Outcome: {risk_assessment['predicted_outcome']}")
-            print(f"  • Dropout Probability: {risk_assessment['dropout_probability']:.1%}")
-            print(f"  • Risk Level: {risk_assessment['risk_level']}")
-            print(f"\n💡 RECOMMENDATIONS:")
-            for rec in risk_assessment['recommendations']: print(f"  • {rec}")
+            if predictor.best_model is not None and predictor.is_fitted:
+                risk_assessment = predictor.predict_student_risk(sample_student_df_for_pred)
+                print(f"👤 Student Profile: Example high-risk student")
+                print(f"📊 Academic Status: GPA {sample_student_dict_raw.get('Sem1_GPA', 'N/A')}, Attendance {sample_student_dict_raw.get('Sem1_attendance_rate', 'N/A')}%")
+                print(f"\n🎯 RISK ASSESSMENT:")
+                print(f"  • Predicted Outcome: {risk_assessment['predicted_outcome']}")
+                print(f"  • Dropout Probability: {risk_assessment['dropout_probability']:.1%}")
+                print(f"  • Risk Level: {risk_assessment['risk_level']}")
+                print(f"\n💡 RECOMMENDATIONS:")
+                for rec in risk_assessment['recommendations']: print(f"  • {rec}")
+            else:
+                print("⚠️ Cannot perform sample prediction: Model not trained or preprocessor not fitted.")
         except Exception as e:
             print(f"❌ Error during sample prediction: {e}")
+            import traceback
+            traceback.print_exc()
     else:
-        print("⚠️ Could not perform sample prediction as trained feature list is unavailable.")
+        print("⚠️ Could not perform sample prediction as trained feature list (_all_trained_original_features) is unavailable in predictor.")
 
     print("\n" + "=" * 50)
     print("💾 SAVING MODEL FOR DEPLOYMENT")
-    # Default path relative to project root
     model_save_path = "ml/models/student_dropout_model.pkl"
     predictor.save_model(filepath=model_save_path)
+    
+    # Placeholder for insights; this could be a dictionary of interesting findings.
+    generated_insights = predictor.generate_insights_report(df.copy()) if df is not None else {} 
     
     print("\n🎉 TRAINING PIPELINE COMPLETE!")
     print("=" * 50)
     
-    return predictor, {} # Return empty dict for insights for now
+    return predictor, generated_insights
 
 class StudentRiskDashboard: # Example class, can be expanded
     def __init__(self, predictor_instance):

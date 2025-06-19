@@ -1,16 +1,20 @@
 # student-dropout-prediction-api/app/services.py
 import pandas as pd
-from typing import List, Dict, Any, Optional # Import Optional
+from typing import List, Dict, Any, Optional
 import os
 from pathlib import Path
 
-from app.schemas import StudentDataInput, PredictionResponse, StudentPredictionResult
+# Import Pydantic models (specifically FeatureImportanceItem if it's defined in schemas.py)
+from app.schemas import (
+    StudentDataInput,
+    PredictionResponse,
+    StudentPredictionResult,
+    FeatureImportanceItem # Assuming this is in schemas.py for consistency
+)
 from app.core_utils import get_predictor, create_feature_dataframe, DEFAULT_MODEL_PATH, DEFAULT_DATA_DIR, PROJECT_ROOT
 
-# Import the training pipeline function
-# Ensure sys.path modification in core_utils has taken effect
 from ml.ml_dropout_prediction_system import main_training_pipeline as run_ml_training
-from sklearn.ensemble import VotingClassifier # Added for type checking
+from sklearn.ensemble import VotingClassifier # For type checking
 
 def predict_single_student(student_data: StudentDataInput) -> PredictionResponse:
     predictor = get_predictor()
@@ -26,6 +30,7 @@ def predict_single_student(student_data: StudentDataInput) -> PredictionResponse
 
     try:
         risk_assessment = predictor.predict_student_risk(student_df)
+        # Pydantic will validate risk_assessment against PredictionResponse schema
         return PredictionResponse(**risk_assessment)
     except Exception as e:
         # import logging; logging.exception("Prediction error") # For server-side debugging
@@ -52,7 +57,7 @@ def predict_batch_students(students_data: List[StudentDataInput]) -> List[Studen
             results.append(StudentPredictionResult(
                 student_id=student_id,
                 predicted_outcome="Error",
-                probabilities={},
+                probabilities={}, # Ensure this matches PredictionResponse schema
                 dropout_probability=0.0,
                 risk_level="Unknown",
                 recommendations=[],
@@ -76,7 +81,7 @@ def train_model_pipeline() -> Dict[str, Any]:
                 "status": "success",
                 "message": "Training pipeline completed successfully. Model saved and reloaded.",
                 "model_path": DEFAULT_MODEL_PATH, 
-                "insights_generated": bool(insights) # True if insights dict is not empty
+                "insights_generated": bool(insights)
             }
         else:
             return {
@@ -97,17 +102,14 @@ def train_model_pipeline() -> Dict[str, Any]:
 def get_model_information() -> Dict[str, Any]:
     predictor = get_predictor()
 
-    # Initialize with defaults that match ModelInfoResponse schema fields
     info_for_schema = {
         "model_type": None,
         "training_date": None, 
         "performance_metrics": None,
-        "feature_importance_available": False,
+        "feature_importance_available": False, # Will be updated if importance is found
         "model_ready": False,
     }
     
-    # Additional internal info, not directly part of ModelInfoResponse schema
-    # but can be useful for constructing the final dict or for debugging.
     internal_debug_info = {
          "message": "Model not loaded or not fully initialized.", 
          "loaded_model_path": None,
@@ -115,54 +117,47 @@ def get_model_information() -> Dict[str, Any]:
          "available_models_metrics": None
     }
 
-
     if not predictor or not predictor.is_fitted or not predictor.best_model:
-        # Return only the schema-compatible fields for the "not ready" state
         return info_for_schema
 
-    # If predictor and model seem to be loaded and fitted
     info_for_schema["model_ready"] = True
     internal_debug_info["preprocessor_fitted"] = predictor.is_fitted
-    # Attempt to get the path it was loaded from (relies on how load_model was called)
-    # This is a bit of a guess; for robustness, store loaded_path in predictor instance if needed
     internal_debug_info["loaded_model_path"] = DEFAULT_MODEL_PATH 
     internal_debug_info["available_models_metrics"] = predictor.performance_metrics
     internal_debug_info["message"] = "Model is loaded."
 
-
     if predictor.best_model:
         info_for_schema["model_type"] = predictor.best_model.__class__.__name__
     
-    # Check for feature importance availability
+    # Update feature_importance_available based on predictor.feature_importance content
     if predictor.feature_importance:
-        best_model_type_name = info_for_schema["model_type"] # Can be None if best_model is None
-        
-        # Check if there's importance data specifically for the best model
+        best_model_type_name = info_for_schema["model_type"]
+        specific_importance_found = False
         if best_model_type_name and best_model_type_name in predictor.feature_importance:
-            info_for_schema["feature_importance_available"] = True
+            df_best_model_importance = predictor.feature_importance[best_model_type_name]
+            if isinstance(df_best_model_importance, pd.DataFrame) and not df_best_model_importance.empty:
+                info_for_schema["feature_importance_available"] = True
+                specific_importance_found = True
         elif best_model_type_name == "VotingClassifier" and 'Ensemble' in predictor.feature_importance:
-            # Special case if ensemble feature importance is stored under 'Ensemble' key
-            info_for_schema["feature_importance_available"] = True
-        elif predictor.feature_importance: # First check if the dict itself is not empty
-            # Check if any of the DataFrame values in the dictionary are non-empty
-            is_any_df_non_empty = False
+            df_ensemble_importance = predictor.feature_importance.get('Ensemble') # Use .get for safety
+            if isinstance(df_ensemble_importance, pd.DataFrame) and not df_ensemble_importance.empty:
+                info_for_schema["feature_importance_available"] = True
+                specific_importance_found = True
+        
+        if not specific_importance_found: # Check if any other importance data exists
             for df_importance in predictor.feature_importance.values():
                 if isinstance(df_importance, pd.DataFrame) and not df_importance.empty:
-                    is_any_df_non_empty = True
+                    info_for_schema["feature_importance_available"] = True
                     break
-            if is_any_df_non_empty:
-                info_for_schema["feature_importance_available"] = True
-
-
-    # Determine the key for the best model's metrics from predictor.performance_metrics
+    
     best_model_name_in_metrics: Optional[str] = None 
     
-    if predictor.best_model: # Ensure best_model exists before checking its type
+    if predictor.best_model: 
         if isinstance(predictor.best_model, VotingClassifier) and \
            'Ensemble' in predictor.models and \
            predictor.models['Ensemble'] == predictor.best_model:
             best_model_name_in_metrics = 'Ensemble'
-        else: # For single models
+        else: 
             for name, model_obj in predictor.models.items():
                 if model_obj == predictor.best_model:
                     best_model_name_in_metrics = name
@@ -173,18 +168,80 @@ def get_model_information() -> Dict[str, Any]:
        isinstance(predictor.performance_metrics[best_model_name_in_metrics], dict):
         info_for_schema["performance_metrics"] = predictor.performance_metrics[best_model_name_in_metrics]
     else:
-        # performance_metrics remains None (its default) if not found or not a dict
         if predictor.best_model: 
-             internal_debug_info["message"] += " Performance metrics for the specific best model name could not be retrieved or were not in the expected dictionary format."
+             internal_debug_info["message"] += f" Performance metrics for '{best_model_name_in_metrics}' could not be retrieved or were not a dict."
     
-    # The function is typed to return Dict[str, Any].
-    # The caller (app/main.py) will then use this dict to populate ModelInfoResponse.
-    # Pydantic will take care of picking the fields it needs.
-    # We can return a merged dict or just info_for_schema if we are sure it contains all Pydantic needs.
-    # For clarity and to match the intended use with ModelInfoResponse, let's ensure
-    # the returned dict primarily contains what ModelInfoResponse expects.
-    
-    # If you want to log internal_debug_info, do it here.
-    # print(f"Internal debug info for /model-info: {internal_debug_info}")
-
+    # print(f"Debug for /model-info. Final info_for_schema: {info_for_schema}")
+    # print(f"Debug for /model-info. Internal info: {internal_debug_info}")
     return info_for_schema
+
+
+def get_feature_importance_data() -> Optional[Dict[str, Any]]:
+    predictor = get_predictor()
+
+    if not predictor or not predictor.is_fitted or not predictor.best_model or not predictor.feature_importance:
+        return None
+
+    importance_data_to_return: Optional[pd.DataFrame] = None
+    model_name_for_importance: Optional[str] = None
+
+    # --- Determine the best key to use for feature importance ---
+    best_model_class_name = predictor.best_model.__class__.__name__ # e.g. "VotingClassifier", "RandomForestClassifier"
+    
+    # 1. Prioritize Permutation Importance for the best model
+    potential_perm_key_ensemble = "Ensemble_Permutation"
+    potential_perm_key_direct_best_model = f"{best_model_class_name}_Permutation"
+
+    if isinstance(predictor.best_model, VotingClassifier) and potential_perm_key_ensemble in predictor.feature_importance:
+        importance_data_to_return = predictor.feature_importance[potential_perm_key_ensemble]
+        model_name_for_importance = "Ensemble (Permutation)"
+    elif potential_perm_key_direct_best_model in predictor.feature_importance:
+        importance_data_to_return = predictor.feature_importance[potential_perm_key_direct_best_model]
+        model_name_for_importance = f"{best_model_class_name} (Permutation)"
+    
+    # 2. Fallback to Direct Importance for the best model (if it's not an ensemble or perm. failed)
+    if importance_data_to_return is None:
+        potential_direct_key_ensemble = "Ensemble_Direct" # Unlikely for VotingClassifier, but for completeness
+        potential_direct_key_best_model = f"{best_model_class_name}_Direct"
+
+        if isinstance(predictor.best_model, VotingClassifier) and potential_direct_key_ensemble in predictor.feature_importance:
+            # This would only happen if you calculated and stored direct importance for the ensemble somehow
+            importance_data_to_return = predictor.feature_importance[potential_direct_key_ensemble]
+            model_name_for_importance = "Ensemble (Direct)"
+        elif potential_direct_key_best_model in predictor.feature_importance:
+            importance_data_to_return = predictor.feature_importance[potential_direct_key_best_model]
+            model_name_for_importance = f"{best_model_class_name} (Direct)"
+        elif best_model_class_name in predictor.feature_importance: # Original fallback
+             importance_data_to_return = predictor.feature_importance[best_model_class_name]
+             model_name_for_importance = f"{best_model_class_name} (Direct/Legacy)"
+
+
+    # 3. If still nothing, and feature_importance dict is not empty, maybe pick the first available Permutation?
+    if importance_data_to_return is None and predictor.feature_importance:
+        for key, df in predictor.feature_importance.items():
+            if "Permutation" in key and isinstance(df, pd.DataFrame) and not df.empty:
+                importance_data_to_return = df
+                model_name_for_importance = key.replace("_Permutation", " (Permutation - Fallback)")
+                print(f"Warning: Using fallback permutation importance: {model_name_for_importance}")
+                break
+    
+    if importance_data_to_return is None or not isinstance(importance_data_to_return, pd.DataFrame) or importance_data_to_return.empty:
+        print("Warning: Final check - No suitable feature importance DataFrame found.")
+        return None
+
+    # Ensure required columns exist
+    if 'feature' not in importance_data_to_return.columns or 'importance' not in importance_data_to_return.columns:
+        print(f"Warning: Feature importance DataFrame for '{model_name_for_importance}' is missing 'feature' or 'importance' columns.")
+        return None
+
+    # Convert DataFrame to the list of FeatureImportanceItem objects
+    structured_importances: List[FeatureImportanceItem] = []
+    for _index, row in importance_data_to_return.iterrows():
+        structured_importances.append(
+            FeatureImportanceItem(feature=str(row['feature']), importance=float(row['importance']))
+        )
+    
+    return {
+        "feature_importances": structured_importances,
+        "model_type": model_name_for_importance if model_name_for_importance else "Unknown"
+    }

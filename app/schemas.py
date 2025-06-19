@@ -41,7 +41,6 @@ class StudentDataInput(BaseModel):
     Sem2_grade: Optional[float] = None
     Sem2_curricular_units_without_evaluations: Optional[int] = None
 
-    # Allows easy creation with example data
     class Config:
         json_schema_extra = {
             "example": {
@@ -58,32 +57,28 @@ class StudentDataInput(BaseModel):
                 'Sem1_curricular_units_enrolled': 5, 'Sem1_curricular_units_evaluations': 5,
                 'Sem1_curricular_units_approved': 5, 'Sem1_grade': 15.0,
                 'Sem1_curricular_units_without_evaluations': 0,
-                # Sem2 fields can be null or omitted for new students before Sem2
                 'Sem2_GPA': None 
             }
         }
-class FeatureImportanceItem(BaseModel):
-    feature: str
-    importance: float
 
-class FeatureImportanceResponse(BaseModel):
-    # Option 1: Two separate lists (as you used in frontend example)
-    # features: List[str]
-    # importances: List[float]
-    # Option 2: List of objects (more structured, and often preferred)
-    feature_importances: List[FeatureImportanceItem]
-    model_type: Optional[str] = None # To know which model's importance this is
-    
+# --- Schemas for Instance-Level Explanations (for future use if SHAP/LIME is added) ---
+class FeatureContributionItem(BaseModel):
+    feature: str
+    contribution_score: float
+    value: Any 
+    description: Optional[str] = None
+
 class PredictionResponse(BaseModel):
     predicted_outcome: str
-    probabilities: Dict[str, float]
+    probabilities: Dict[str, float] 
     dropout_probability: float
     risk_level: str
     recommendations: List[str]
+    feature_contributions: Optional[List[FeatureContributionItem]] = None # For instance-level explanations
 
 class StudentPredictionResult(PredictionResponse):
-    student_id: Optional[str] = None # For batch results
-    error: Optional[str] = None # If prediction failed for this student
+    student_id: Optional[str] = None
+    error: Optional[str] = None
 
 class BatchPredictionResponse(BaseModel):
     results: List[StudentPredictionResult]
@@ -96,7 +91,27 @@ class TrainResponse(BaseModel):
 
 class ModelInfoResponse(BaseModel):
     model_type: Optional[str] = None
-    training_date: Optional[str] = None # This would require storing metadata
+    training_date: Optional[str] = None
     performance_metrics: Optional[Dict[str, Any]] = None
     feature_importance_available: bool = False
     model_ready: bool = False
+
+class FeatureImportanceItem(BaseModel): # Renamed from FeatureImportanceItem to avoid conflict if used elsewhere
+    feature: str
+    importance: float
+
+class FeatureImportanceResponse(BaseModel):
+    feature_importances: List[FeatureImportanceItem]
+    model_type: Optional[str] = None
+
+# --- NEW: Schema for Dashboard Statistics ---
+class AtRiskStats(BaseModel):
+    total_students_processed: int
+    high_risk_count: int
+    medium_risk_count: int
+    low_risk_count: int
+    dropout_count: int
+    enrolled_count: int
+    graduate_count: int
+    data_source_timestamp: Optional[str] = None
+    data_source_description: str

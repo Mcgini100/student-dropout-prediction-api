@@ -1,5 +1,3 @@
-# student-dropout-prediction-api/ml/ml_dropout_prediction_system.py
-
 """
 Student Dropout Prediction and Academic Performance Classification System
 Built by: ML Engineering Team

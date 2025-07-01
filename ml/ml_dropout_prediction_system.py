@@ -40,6 +40,7 @@ class StudentDropoutPredictor:
     def __init__(self):
         self.models = {}
         self.preprocessor = None
+        self.label_encoder = None
         self.feature_importance = {}
         self.performance_metrics = {}
         self.best_model = None
@@ -218,7 +219,14 @@ class StudentDropoutPredictor:
 
         if is_training:
             X = df_processed.drop(['Student_ID', 'Target'], axis=1, errors='ignore')
-            y = df_processed['Target'] if 'Target' in df_processed.columns else None
+            y_original = df_processed['Target'] if 'Target' in df_processed.columns else None
+
+            if y_original is not None:
+                self.label_encoder = LabelEncoder()
+                y = self.label_encoder.fit_transform(y_original)
+                print(f"✅ Target variable label encoded. Classes: {dict(zip(self.label_encoder.classes_, self.label_encoder.transform(self.label_encoder.classes_)))}")
+            else:
+                y = None
             
             # Identify and store feature names for consistency
             self._trained_categorical_features = X.select_dtypes(include=['object']).columns.tolist()
@@ -506,35 +514,70 @@ class StudentDropoutPredictor:
         # ... other pattern calculations (ensure column existence checks)
         return insights # Simplified example
     
+    # In class StudentDropoutPredictor (in ml_dropout_prediction_system.py)
+
     def predict_student_risk(self, student_data_df):
-        """Predict individual student risk level. Expects a DataFrame."""
+        """
+        Predict individual student risk level. Expects a DataFrame with original features.
+        This method handles preprocessing, prediction, and decoding the result.
+        """
+        # --- Pre-prediction Checks ---
         if self.best_model is None:
             raise ValueError("Model not trained or loaded. Please run train_models or load_model first.")
         if self.preprocessor is None or not self.is_fitted:
              raise ValueError("Preprocessor not available or not fitted. Please train or load model first.")
-        
+        if self.label_encoder is None:
+            raise ValueError("Label encoder not available. Please train or load a model with an encoder.")
+
+        # --- Input Validation and Formatting ---
         if not isinstance(student_data_df, pd.DataFrame):
             try:
-                student_data_df = pd.DataFrame([student_data_df]) 
+                # Attempt to convert if not a DataFrame (e.g., a single dictionary)
+                student_data_df = pd.DataFrame([student_data_df])
             except Exception as e:
                 raise ValueError(f"Input student_data must be a Pandas DataFrame or convertible to one. Error: {e}")
 
-        # Ensure the input DataFrame has the columns the preprocessor expects.
-        # This is critical. preprocess_data (is_training=False) will now handle this.
+        # --- Preprocessing ---
+        # The preprocess_data method (with is_training=False) will handle ensuring
+        # the DataFrame has the correct columns and applying all transformations.
         student_processed, _, _ = self.preprocess_data(student_data_df.copy(), is_training=False)
-        
-        prediction = self.best_model.predict(student_processed)[0]
-        probabilities = self.best_model.predict_proba(student_processed)[0]
-        classes = self.best_model.classes_.tolist()
-        dropout_prob = probabilities[classes.index('Dropout')] if 'Dropout' in classes else 0.0
 
+        # --- Prediction ---
+        # The model will predict a numeric label (e.g., 0, 1, 2)
+        prediction_encoded = self.best_model.predict(student_processed)[0]
+        
+        # The model's predict_proba will return probabilities for each numeric class
+        probabilities = self.best_model.predict_proba(student_processed)[0]
+
+        # --- Decoding and Formatting the Response ---
+        # Use the label_encoder to get the original string class names
+        # The order of these names corresponds to the order of probabilities
+        string_class_names = self.label_encoder.classes_.tolist()
+
+        # Decode the predicted numeric label back to its string representation
+        predicted_outcome_str = self.label_encoder.inverse_transform([prediction_encoded])[0]
+
+        # Find the probability of the 'Dropout' class specifically
+        try:
+            # Get the index of the 'Dropout' class from our string names list
+            dropout_class_index = string_class_names.index('Dropout')
+            # Use that index to get the corresponding probability
+            dropout_prob = probabilities[dropout_class_index]
+        except (ValueError, IndexError):
+            # Handle cases where 'Dropout' might not be a class or index is out of bounds
+            print("Warning: 'Dropout' class not found in label encoder. Defaulting dropout probability to 0.0.")
+            dropout_prob = 0.0
+
+        # --- Construct the Final Assessment Dictionary ---
         risk_assessment = {
-            'predicted_outcome': prediction,
-            'probabilities': dict(zip(classes, probabilities.round(4))), # Round for cleaner output
+            'predicted_outcome': predicted_outcome_str,
+            'probabilities': dict(zip(string_class_names, probabilities.round(4))), # Map string names to probabilities
             'dropout_probability': round(dropout_prob, 4),
             'risk_level': 'High' if dropout_prob > 0.7 else ('Medium' if dropout_prob > 0.3 else 'Low'),
             'recommendations': self.generate_recommendations(student_data_df.iloc[0], dropout_prob)
+            # 'feature_contributions' could be added here if SHAP/LIME is implemented
         }
+
         return risk_assessment
     
     def generate_recommendations(self, student_series, dropout_probability):
@@ -562,6 +605,7 @@ class StudentDropoutPredictor:
         model_data = {
             'best_model': self.best_model,
             'preprocessor': self.preprocessor,
+            'label_encoder': self.label_encoder,
             'models': self.models, 
             'performance_metrics': self.performance_metrics,
             'feature_importance': self.feature_importance,
@@ -581,6 +625,7 @@ class StudentDropoutPredictor:
             model_data = joblib.load(filepath)
             self.best_model = model_data.get('best_model')
             self.preprocessor = model_data.get('preprocessor')
+            self.label_encoder = model_data.get('label_encoder')
             self.models = model_data.get('models', {}) 
             self.performance_metrics = model_data.get('performance_metrics', {})
             self.feature_importance = model_data.get('feature_importance', {})

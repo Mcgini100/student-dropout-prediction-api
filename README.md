@@ -1,5 +1,3 @@
-Okay, here's a comprehensive README.md file for your student-dropout-prediction-api backend project. This README is designed to give a frontend developer all the necessary information to build a UI that successfully interacts with your API.
-
 # Student Dropout Prediction API
 
 This API provides endpoints for predicting student dropout risk and academic status using machine learning models. It allows for single predictions, batch predictions via JSON or CSV, model training, and retrieving model information.

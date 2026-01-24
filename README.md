@@ -260,7 +260,7 @@ This schema defines the structure for individual student data used in `/predict`
 | `Sem2_curricular_units_without_evaluations`| integer (opt)| Yes   | `null` if not applicable                                       |
 | *... (Potentially other engineered features like `Sem1_GPA`, `Sem1_attendance_rate` if used by the model)* |               |           |                                                                |
 
-**Note for Frontend Developers:** The exact list of categorical options for `select` dropdowns should be obtained from the team that developed the model or by inspecting the unique values in the training dataset for each categorical column. Using incorrect string values will lead to prediction errors.
+**Note for Frontend:** The exact list of categorical options for `select` dropdowns should be obtained from the team that developed the model or by inspecting the unique values in the training dataset for each categorical column. Using incorrect string values will lead to prediction errors.
 
 ### ModelInfoResponse Schema
 
@@ -280,12 +280,7 @@ TrainResponse Schema
   "model_path": "string | null",
   "insights_generated": "boolean | null"
 }
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Json
-IGNORE_WHEN_COPYING_END
+
 PredictionResponse Schema
 
 This is the structure for a single prediction result.
@@ -302,12 +297,7 @@ This is the structure for a single prediction result.
   "risk_level": "string",        // e.g., "Low", "Medium", "High"
   "recommendations": ["string"]  // Array of recommendation strings
 }
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Json
-IGNORE_WHEN_COPYING_END
+
 StudentPredictionResult Schema
 
 This extends PredictionResponse for batch results.
@@ -323,24 +313,14 @@ This extends PredictionResponse for batch results.
   "student_id": "string | null", // From CSV or auto-generated for JSON batch
   "error": "string | null"     // Error message if prediction failed for this specific student
 }
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Json
-IGNORE_WHEN_COPYING_END
+
 BatchPredictionResponse Schema
 {
   "results": [
     // Array of StudentPredictionResult objects
   ]
 }
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Json
-IGNORE_WHEN_COPYING_END
+
 4. CORS Configuration
 
 The backend API is configured with CORS (Cross-Origin Resource Sharing) middleware. By default, it allows requests from:

@@ -1,0 +1,14 @@
+# Render Blueprint: New > Blueprint > select this repo (free plan).
+services:
+  - type: web
+    name: student-dropout-prediction-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # Protects POST /train on the public deployment (send as X-Admin-Token).
+      - key: ADMIN_TOKEN
+        generateValue: true
+      # Optional: comma-separated frontend origins allowed by CORS.
+      - key: CORS_ORIGINS
+        sync: false

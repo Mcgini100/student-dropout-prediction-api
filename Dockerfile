@@ -1,26 +1,25 @@
 # student-dropout-prediction-api/Dockerfile
-FROM python:3.9-slim
+# numpy 2.3 / scipy 1.16 in requirements.txt need Python >= 3.11
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Create directories for ml module structure
-RUN mkdir -p /app/ml/data && mkdir -p /app/ml/models
-
-# Copy requirements first to leverage Docker cache
+# Install dependencies first to leverage the Docker layer cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire project content
 COPY . .
 
-# Ensure the ML script is executable if needed (not usually necessary for .py)
-# RUN chmod +x ml/ml_dropout_prediction_system.py
+# The trained model is not committed to git. Train it at build time from the
+# bundled (synthetic) dataset so the image ships ready to serve. Seeds are
+# fixed, so every build produces the same model (about 1 minute).
+RUN python ml/ml_dropout_prediction_system.py \
+    && test -f ml/models/student_dropout_model.pkl
 
-# Expose the port the app runs on
 EXPOSE 8000
 
-# Command to run the FastAPI application using Uvicorn
-# The CWD will be /app, which is the project root.
-# Paths like "ml/models/student_dropout_model.pkl" in StudentDropoutPredictor
-# should work correctly from this CWD.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Hosting platforms such as Render and Cloud Run inject $PORT; default to 8000 locally.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

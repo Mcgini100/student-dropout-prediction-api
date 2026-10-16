@@ -1,6 +1,48 @@
 # Student Dropout Prediction API
 
+[![tests](https://github.com/Mcgini100/student-dropout-prediction-api/actions/workflows/tests.yml/badge.svg)](https://github.com/Mcgini100/student-dropout-prediction-api/actions/workflows/tests.yml)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Mcgini100/student-dropout-prediction-api)
+
 This API provides endpoints for predicting student dropout risk and academic status using machine learning models. It allows for single predictions, batch predictions via JSON or CSV, model training, and retrieving model information.
+
+> **About the data:** `ml/data/student_dropout_dataset.csv` is **synthetic**. It is exactly the output of
+> `StudentDropoutPredictor.generate_dataset(n_students=5000)` (seed 42) in `ml/ml_dropout_prediction_system.py`,
+> rounded to two decimals. No real student records are included. The project demonstrates the engineering
+> (preprocessing pipeline, five-model comparison, soft-voting ensemble, API, batch CSV scoring), not findings about
+> real students, and the accuracy below reflects how learnable the generator's rules are.
+
+## Results (synthetic data, stratified 80/20 split, `python ml/ml_dropout_prediction_system.py`)
+
+| Model | 3-fold CV accuracy | Test accuracy | Weighted F1 |
+|---|---|---|---|
+| Gradient Boosting | 0.858 ± 0.009 | 0.884 | 0.882 |
+| Random Forest | 0.858 ± 0.010 | 0.871 | 0.868 |
+| Logistic Regression | 0.839 ± 0.004 | 0.855 | 0.854 |
+| SVM (RBF) | 0.841 ± 0.004 | 0.847 | 0.845 |
+| Neural Network (MLP) | 0.819 ± 0.006 | 0.824 | 0.824 |
+| **Soft-voting ensemble** (GB + RF + LR, served by the API) | – | 0.878 | 0.876 |
+
+On this split the ensemble scores slightly below Gradient Boosting alone (0.878 vs 0.884 accuracy).
+
+## Quick start
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python ml/ml_dropout_prediction_system.py      # trains and saves ml/models/student_dropout_model.pkl (~1 min)
+uvicorn app.main:app --reload                  # http://localhost:8000/docs
+pytest -q                                      # 15 API tests (trains the model first if it is missing)
+```
+
+With Docker (the model is trained during the image build):
+
+```bash
+docker build -t dropout-api .
+docker run -p 8000:8000 dropout-api            # http://localhost:8000/health
+```
+
+**Deploy:** `render.yaml` is a Render Blueprint for the free plan (Docker runtime, `/health` check, generated
+`ADMIN_TOKEN`). Use the "Deploy to Render" button above, or New > Blueprint in the Render dashboard.
+GitHub Actions runs the test suite and a Docker build + health check on every push.
 
 ## Table of Contents
 
@@ -14,6 +56,7 @@ This API provides endpoints for predicting student dropout risk and academic sta
     *   [Common Responses & Error Codes](#common-responses--error-codes)
     *   [Endpoints](#endpoints)
         *   [GET /](#get-)
+        *   [GET /health](#get-health)
         *   [GET /model-info](#get-model-info)
         *   [POST /train](#post-train)
         *   [POST /predict](#post-predict)
@@ -35,7 +78,7 @@ This API provides endpoints for predicting student dropout risk and academic sta
 
 ### Prerequisites
 
-*   Python 3.9+
+*   Python 3.11+ (numpy 2.3 / scipy 1.16 require it)
 *   Pip (Python package installer)
 *   Access to the project's source code.
 
@@ -56,7 +99,7 @@ This API provides endpoints for predicting student dropout risk and academic sta
     pip install -r requirements.txt
     ```
 5.  **Dataset:**
-    *   Ensure the student dataset (e.g., `student_dropout_dataset.csv`) is placed in the `ml/data/` directory.
+    *   The synthetic dataset `ml/data/student_dropout_dataset.csv` is included in the repository.
     *   If the dataset is not found, the `/train` endpoint will attempt to generate a synthetic dataset and save it as `ml/data/generated_student_dropout_dataset.csv`.
 6.  **Pre-trained Model (Optional):**
     *   If a pre-trained model (`student_dropout_model.pkl`) exists in `ml/models/`, it will be loaded on startup.
@@ -85,7 +128,9 @@ This API provides endpoints for predicting student dropout risk and academic sta
 
 ### Authentication
 
-*   Currently, this API does not implement authentication. All endpoints are publicly accessible once the server is running.
+*   Prediction and information endpoints are public.
+*   `POST /train` retrains the model and is expensive. When the `ADMIN_TOKEN` environment variable is set (as on the
+    Render deployment), the request must include the header `X-Admin-Token: <token>`, otherwise it returns `403`.
 
 ### Common Responses & Error Codes
 
@@ -109,6 +154,11 @@ This API provides endpoints for predicting student dropout risk and academic sta
       "message": "Welcome to the Student Dropout Prediction API. See /docs for details."
     }
     ```
+
+#### GET `/health`
+
+*   **Description:** Health check used by the hosting platform.
+*   **Response (200 OK):** `{"status": "ok", "model_loaded": true}`
 
 #### GET `/model-info`
 
@@ -138,7 +188,7 @@ This API provides endpoints for predicting student dropout risk and academic sta
 
 #### POST `/train`
 
-*   **Description:** Triggers the machine learning model training pipeline. This can be a long-running process. The API responds immediately indicating submission; actual training happens server-side.
+*   **Description:** Runs the machine learning training pipeline synchronously (about a minute) and reloads the new model. Requires `X-Admin-Token` when `ADMIN_TOKEN` is set.
 *   **Method:** `POST`
 *   **Request Body:** None
 *   **Response (200 OK):** (See [TrainResponse Schema](#trainresponse-schema))

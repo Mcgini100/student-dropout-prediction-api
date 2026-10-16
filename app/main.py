@@ -1,5 +1,6 @@
 # student-dropout-prediction-api/app/main.py
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+import os
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any, Optional
@@ -40,6 +41,9 @@ origins = [
     "http://localhost:5173",
     "http://localhost:8080",
 ]
+# Extra allowed origins for a deployed frontend, comma-separated, e.g.
+# CORS_ORIGINS="https://my-dashboard.onrender.com"
+origins += [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,6 +67,12 @@ async def startup_event():
 @app.get("/", tags=["Root"])
 async def read_root():
     return {"message": "Welcome to the Student Dropout Prediction API. See /docs for details."}
+
+@app.get("/health", tags=["Root"])
+async def health():
+    """Liveness/readiness probe for the hosting platform."""
+    predictor = get_predictor()
+    return {"status": "ok", "model_loaded": bool(predictor and predictor.is_fitted)}
 
 @app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
 async def predict(student_data: StudentDataInput):
@@ -121,7 +131,12 @@ async def batch_predict_csv(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Internal server error during CSV batch prediction: {str(e)}")
 
 @app.post("/train", response_model=TrainResponse, tags=["Management"])
-async def train_model_endpoint(background_tasks: BackgroundTasks): # Renamed to avoid conflict with function name
+async def train_model_endpoint(background_tasks: BackgroundTasks, x_admin_token: Optional[str] = Header(default=None)):
+    # Retraining is expensive. When ADMIN_TOKEN is set (as on the public
+    # deployment), require it in the X-Admin-Token header.
+    admin_token = os.getenv("ADMIN_TOKEN")
+    if admin_token and x_admin_token != admin_token:
+        raise HTTPException(status_code=403, detail="Retraining requires a valid X-Admin-Token header.")
     try:
         result = train_model_pipeline()
         return TrainResponse(**result)
